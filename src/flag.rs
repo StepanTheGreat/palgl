@@ -85,9 +85,6 @@ decl_bit_constants!(wgpu::TextureUsages => {
     ///
     /// Consider adding [`TextureUsages::TRANSIENT_ATTACHMENT`] if the contents are not reused.
     TEXTURE_STORAGE_RENDER_ATTACHMENT => RENDER_ATTACHMENT,
-
-    /// Allows a texture to be used with image atomics. Requires [`Features::TEXTURE_ATOMIC`].
-    TEXTURE_STORAGE_STORAGE_ATOMIC => STORAGE_ATOMIC,
 });
 
 decl_bit_constants!(wgpu::Backends => {
@@ -115,12 +112,4 @@ decl_bit_constants!(wgpu::Backends => {
     /// Supported on Linux/Android, the web through webassembly via WebGL, and Windows and
     /// macOS/iOS via ANGLE
     BACKEND_GL => GL,
-    
-    /// Supported when targeting the web through WebAssembly with the `webgpu` feature enabled.
-    ///
-    /// The WebGPU backend is special in several ways:
-    /// It is not not implemented by `wgpu_core` and instead by the higher level `wgpu` crate.
-    /// Whether WebGPU is targeted is decided upon the creation of the `wgpu::Instance`,
-    /// *not* upon adapter creation. See `wgpu::Instance::new`.
-    BACKEND_BROWSER_WEBGPU => BROWSER_WEBGPU,
 });

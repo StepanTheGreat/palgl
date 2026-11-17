@@ -1,12 +1,14 @@
 //! Everything related to the global context - initialisation and everything
 
-use std::num::{NonZeroU32, NonZeroU64};
+use std::{num::{NonZeroU32, NonZeroU64}, sync::Mutex};
 
 use wgpu::util::DeviceExt;
 
+use crate::rwh::{DisplayHandle, WindowHandle};
+
 pub struct InitContext {
-    pub raw_display_handle: Option<wgpu::rwh::RawDisplayHandle>,
-    pub raw_window_handle: wgpu::rwh::RawWindowHandle
+    pub raw_display_handle: Option<DisplayHandle>,
+    pub raw_window_handle: WindowHandle
 }
 
 struct VertexBufferLayoutBuilder {
@@ -129,10 +131,11 @@ impl VertexBufferLayouts {
     }
 }
 
+#[repr(u32)]
 pub enum BufferBindingType {
-    Uniform,
-    Storage,
-    StorageReadOnly,
+    Uniform = 1,
+    Storage = 2,
+    StorageReadOnly = 3,
 }
 
 impl From<BufferBindingType> for wgpu::BufferBindingType {
@@ -145,12 +148,13 @@ impl From<BufferBindingType> for wgpu::BufferBindingType {
     }
 }
 
+#[repr(u32)]
 pub enum TextureSampleType {
-    FloatFilterable,
-    FloatNonFilterable,
-    Depth,
-    Sint,
-    Uint
+    FloatFilterable = 1,
+    FloatNonFilterable = 2,
+    Depth = 3,
+    Sint = 4,
+    Uint = 5
 }
 
 impl From<TextureSampleType> for wgpu::TextureSampleType {
@@ -242,46 +246,36 @@ impl BindGroupLayoutEntries {
     }
 }
 
+#[repr(u32)]
 pub enum IndexFormat {
-    None,
-    Uint16,
-    Uint32
+    Uint16 = 1,
+    Uint32 = 2
 }
 
-impl From<IndexFormat> for Option<wgpu::IndexFormat> {
+impl From<IndexFormat> for wgpu::IndexFormat {
     fn from(value: IndexFormat) -> Self {
-        Some(match value {
+        match value {
             IndexFormat::Uint16 => wgpu::IndexFormat::Uint16,
             IndexFormat::Uint32 => wgpu::IndexFormat::Uint32,
-            IndexFormat::None => return None
-        })
+        }
     }
 }
 
+#[repr(u32)]
 pub enum CompareFunction {
-    None,
-
-    Never,
-
-    Less,
-
-    Equal,
-
-    LessEqual,
-
-    Greater,
-
-    NotEqual,
-
-    GreaterEqual,
-
-    Always,
+    Never = 1,
+    Less = 2,
+    Equal = 3,
+    LessEqual = 4,
+    Greater = 5,
+    NotEqual = 6,
+    GreaterEqual = 7,
+    Always = 8,
 }
 
-impl From<CompareFunction> for Option<wgpu::CompareFunction> {
+impl From<CompareFunction> for wgpu::CompareFunction {
     fn from(value: CompareFunction) -> Self {
-        Some(match value {
-            CompareFunction::None => return None,
+        match value {
             CompareFunction::Never => wgpu::CompareFunction::Never,
             CompareFunction::Less => wgpu::CompareFunction::Less,
             CompareFunction::Equal => wgpu::CompareFunction::Equal,
@@ -290,43 +284,41 @@ impl From<CompareFunction> for Option<wgpu::CompareFunction> {
             CompareFunction::NotEqual => wgpu::CompareFunction::NotEqual,
             CompareFunction::GreaterEqual => wgpu::CompareFunction::GreaterEqual,
             CompareFunction::Always => wgpu::CompareFunction::Always,
-        })
+        }
     }
 }
 
+#[repr(u32)]
 pub enum DepthWriteEnabled {
-    None,
-    True,
-    False
+    True = 1,
+    False = 2
 }
 
-impl From<DepthWriteEnabled> for Option<bool> {
+impl From<DepthWriteEnabled> for bool {
     fn from(value: DepthWriteEnabled) -> Self {
-        Some(match value {
+        match value {
             DepthWriteEnabled::True => true,
             DepthWriteEnabled::False => false,
-            DepthWriteEnabled::None => return None
-        })
+        }
     }
 }
 
+#[repr(u32)]
 pub enum BlendState {
-    None,
-    Additive,
-    AlphaBlending,
-    PremultipliedAlphaBlending,
-    Replace
+    Additive = 1,
+    AlphaBlending = 2,
+    PremultipliedAlphaBlending = 3,
+    Replace = 4
 }
 
-impl From<BlendState> for Option<wgpu::BlendState> {
+impl From<BlendState> for wgpu::BlendState {
     fn from(value: BlendState) -> Self {
-        Some(match value {
+        match value {
             BlendState::Additive => wgpu::BlendState::ADDITIVE,
             BlendState::AlphaBlending => wgpu::BlendState::ALPHA_BLENDING,
             BlendState::Replace => wgpu::BlendState::REPLACE,
             BlendState::PremultipliedAlphaBlending => wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-            BlendState::None => return None
-        })
+        }
     }
 }
 
@@ -353,10 +345,10 @@ impl RenderPipelineConfig {
     }
 
     /// Push a color target to use in fragment state
-    pub fn push_color_target(&mut self, format: wgpu::TextureFormat, blend: BlendState, write_mask: wgpu::ColorWrites) {
+    pub fn push_color_target(&mut self, format: wgpu::TextureFormat, blend: Option<BlendState>, write_mask: wgpu::ColorWrites) {
         self.color_targets.push(Some(wgpu::ColorTargetState {
             format,
-            blend: blend.into(),
+            blend: blend.map(|b| b.into()),
             write_mask
         }));
     }
@@ -367,18 +359,23 @@ impl RenderPipelineConfig {
     }
 
     /// 
-    pub fn set_depth_stencil_state(&mut self, format: wgpu::TextureFormat, depth_write_enabled: DepthWriteEnabled, depth_compare: CompareFunction) {
+    pub fn set_depth_stencil_state(
+        &mut self, 
+        format: wgpu::TextureFormat,
+        depth_write_enabled: Option<DepthWriteEnabled>, 
+        depth_compare: Option<CompareFunction>
+    ) {
         match self.depth_stencil.as_mut() {
             Some(depth_state) => {
                 depth_state.format = format;
-                depth_state.depth_write_enabled = depth_write_enabled.into();
-                depth_state.depth_compare = depth_compare.into();
+                depth_state.depth_write_enabled = depth_write_enabled.map(|b| b.into());
+                depth_state.depth_compare = depth_compare.map(|b| b.into());
             },
             None => {
                 self.depth_stencil = Some(wgpu::DepthStencilState {
                     format,
-                    depth_write_enabled: depth_write_enabled.into(),
-                    depth_compare: depth_compare.into(),
+                    depth_write_enabled: depth_write_enabled.map(|b| b.into()),
+                    depth_compare: depth_compare.map(|b| b.into()),
                     bias: wgpu::DepthBiasState::default(),
                     stencil: wgpu::StencilState::default()
                 });
@@ -426,12 +423,12 @@ impl RenderPipelineConfig {
         topology: wgpu::PrimitiveTopology,
         front_face: wgpu::FrontFace,
         polygon_mode: wgpu::PolygonMode,
-        strip_index_format: IndexFormat
+        strip_index_format: Option<IndexFormat>
     ) {
         self.primitive.front_face = front_face;
         self.primitive.topology = topology;
         self.primitive.polygon_mode = polygon_mode;
-        self.primitive.strip_index_format = strip_index_format.into();
+        self.primitive.strip_index_format = strip_index_format.map(|b| b.into());
     }
 
     /// Set multisampling settings
@@ -467,10 +464,18 @@ pub struct PalCtx {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+
+    /// The current command encoder
+    command_encoder: Mutex<Option<wgpu::CommandEncoder>>,
+
+    /// The current render pass. While present - nothing can be done with the command encoder
+    render_pass: Mutex<Option<wgpu::RenderPass<'static>>>
 }
 
 impl PalCtx {
-    async fn new(init: InitContext, conf: &PalCtxConfig) -> Self {
+    /// # Safety
+    /// Unsafe display/window handles could be passed when initializing the context.
+    async unsafe fn new(init: InitContext, conf: &PalCtxConfig) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { 
             display: None,
             backends: conf.backends,
@@ -479,10 +484,10 @@ impl PalCtx {
             backend_options: wgpu::BackendOptions::default()
         });
 
-        let surface = unsafe { instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-            raw_display_handle: init.raw_display_handle,
-            raw_window_handle: init.raw_window_handle
-        }) }.unwrap();
+        let surface = unsafe { instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle { 
+            raw_display_handle: init.raw_display_handle.map(|h| *h.handle()), 
+            raw_window_handle: *init.raw_window_handle.handle()
+        })}.unwrap();
 
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: conf.power_preference,
@@ -501,12 +506,68 @@ impl PalCtx {
             trace: wgpu::Trace::Off
         }).await.unwrap();
 
+        let command_encoder = Mutex::new(None);
+        let render_pass = Mutex::new(None);
+
         Self {
             surface,
             adapter,
             device,
             queue,
+
+            command_encoder,
+            render_pass,
         }
+    }
+
+    /// Set a device lost callback
+    pub fn set_device_lost_callback<F>(&self, f: F)
+    where F: Fn(wgpu::DeviceLostReason) + Send + 'static  {
+        self.device.set_device_lost_callback(move |reason, _| (f)(reason));
+    }
+
+    /// Check whether a render pass is currently active. While one is active, writing commands to a command encoder is impossible. 
+    pub fn render_pass_active(&self) -> bool {
+        self.render_pass.lock()
+            .unwrap()
+            .is_some()
+    }
+
+    /// Put a render pass
+    fn set_render_pass(&self, rpass: wgpu::RenderPass<'static>) {
+        let mut rpass_guard = self.render_pass.lock().unwrap();
+        let _ = rpass_guard.replace(rpass);
+    }
+
+    fn drop_render_pass(&self) {
+        let _ = self.render_pass.lock().unwrap().take();
+    }
+
+    /// Get a command encoder to write commands to (will lazily create one if one doesn't exist)
+    fn with_command_encoder<F>(&self, f: F)
+    where F: FnOnce(&mut wgpu::CommandEncoder) {
+        
+        // Don't do anything, we currently have a render pass active
+        if self.render_pass_active() {
+            return;
+        }
+
+        let mut encoder_guard = self.command_encoder.lock().unwrap();
+        let encoder = encoder_guard.get_or_insert(
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default())
+        );
+
+        f(encoder);
+    }
+
+    /// Submit any work that was written to our command encoder
+    fn submit_command_encoder(&self) {
+        self.drop_render_pass();
+        
+        let mut encoder_guard = self.command_encoder.lock().unwrap();
+        if let Some(encoder) = encoder_guard.take() {
+            self.queue.submit([encoder.finish()]);
+        } 
     }
 
     /// Create a new buffer from the provided size, usage and optional mapping parameter
@@ -563,6 +624,62 @@ impl PalCtx {
         })
     }
 
+    /// A simplified version of [PalCtx::new_texture] for 2D textures
+    pub fn new_texture2d(
+        &self, 
+        size: (u32, u32), 
+        mip_level_count: u32,
+        sample_count: u32, 
+        format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages
+    ) -> wgpu::Texture {
+        self.new_texture(
+            wgpu::Extent3d{ width: size.0, height: size.1, depth_or_array_layers: 1}, 
+            wgpu::TextureDimension::D2, 
+            mip_level_count, 
+            sample_count, 
+            format, 
+            usage
+        )
+    }
+
+    /// A simplified version of [PalCtx::new_texture] for 3D textures
+    pub fn new_texture3d(
+        &self, 
+        size: (u32, u32, u32),
+        mip_level_count: u32, 
+        format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages
+    ) -> wgpu::Texture {
+        self.new_texture(
+            wgpu::Extent3d{ width: size.0, height: size.1, depth_or_array_layers: size.2}, 
+            wgpu::TextureDimension::D3, 
+            mip_level_count, 
+            1, 
+            format, 
+            usage
+        )
+    }
+
+    /// A simplified version of [PalCtx::new_texture] for 3D textures
+    pub fn new_texture2d_array(
+        &self, 
+        size: (u32, u32),
+        layers: u32, 
+        mip_level_count: u32, 
+        format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages
+    ) -> wgpu::Texture {
+        self.new_texture(
+            wgpu::Extent3d{ width: size.0, height: size.1, depth_or_array_layers: layers}, 
+            wgpu::TextureDimension::D2, 
+            mip_level_count, 
+            1, 
+            format, 
+            usage
+        )
+    }
+
     /// Create a new bind group layout
     pub fn new_bind_group_layout(&self, layout: &BindGroupLayoutEntries) -> wgpu::BindGroupLayout {
         self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -588,7 +705,6 @@ impl PalCtx {
         vertex_buffer_layouts: &VertexBufferLayouts,
         pipeline_config: &RenderPipelineConfig
     ) -> wgpu::RenderPipeline {
-
         let fragment = if !pipeline_config.color_targets.is_empty() {
             Some(wgpu::FragmentState {
                 module: shader,
@@ -617,5 +733,91 @@ impl PalCtx {
             cache: None,
             multiview_mask: None
         })  
+    }
+
+    /// Write to a provided buffer with the provided offset
+    pub fn write_buffer(&self, buffer: &wgpu::Buffer, offset: u64, data: &[u8]) {
+        self.queue.write_buffer(buffer, offset, data);
+    }
+
+    /// Write tot he provided texture.
+    /// 
+    /// - `data` specifies the binary image data
+    /// - `mip_level` to which mip level to write (defaults to the first one)
+    /// - `aspect` which aspect of a texture (usually keep it at [None], only ever useful for depth/stencil textures to specify to which part to write)
+    /// - `origin` where to start writing the texture
+    /// - `size` how much to write
+    pub fn write_texture(
+        &self, 
+        texture: &wgpu::Texture, 
+        data: &[u8], 
+        mip_level: Option<u32>,
+        aspect: Option<wgpu::TextureAspect>,
+        origin: wgpu::Origin3d,
+        size: wgpu::Extent3d,
+    ) {
+        let aspect = aspect.unwrap_or(wgpu::TextureAspect::All);
+        let mip_level = mip_level.unwrap_or(0);
+
+        // To some textures we cannot write, or, the aspect is simply wrong
+        let block_bytes = if let Some(s) = texture.format().block_copy_size(Some(aspect)) { s } else { return };
+
+        let (block_width, block_height) = texture.format().block_dimensions();
+
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level,
+                origin,
+                aspect
+            }, 
+            data, 
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(texture.width().div_ceil(block_width) * block_bytes),
+                rows_per_image: Some(texture.height().div_ceil(block_height))
+            }, 
+            size
+        );
+    }
+
+    /// Similar to [PalCtx::write_texture], but writes to the entire texture. 
+    pub fn write_texture_full(
+        &self, 
+        texture: &wgpu::Texture, 
+        data: &[u8], 
+        mip_level: Option<u32>,
+        aspect: Option<wgpu::TextureAspect>,
+    ) {
+        self.write_texture(texture, data, mip_level, aspect, wgpu::Origin3d::ZERO, texture.size());
+    }
+
+    /// Begin a new render pass
+    pub fn begin_render_pass(&self) {
+        // Make sure that we first drop our existing render pass if one existed
+        self.drop_render_pass();
+
+        // Then issue a new one
+        self.with_command_encoder(|enc| {
+            let rpass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            }).forget_lifetime();
+
+            self.set_render_pass(rpass);
+        });
+    }
+
+    /// End and submit the current render pass (if one existed)
+    pub fn end_render_pass(&self) {
+        self.drop_render_pass();
+    }
+
+    pub fn submit_frame(&self) {
+        self.submit_command_encoder();
+
+        todo!();
     }
 }
