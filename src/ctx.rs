@@ -9,7 +9,7 @@ pub struct InitContext {
     pub raw_window_handle: WindowHandle
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct PalCtxConfig {
     pub init_width: u32,
     pub init_height: u32,
@@ -21,10 +21,24 @@ pub struct PalCtxConfig {
     pub required_limits: wgpu::Limits
 }
 
+impl Default for PalCtxConfig {
+    fn default() -> Self {
+        Self {
+            init_height: 512,
+            init_width: 512,
+
+            backends: wgpu::Backends::default(),
+            power_preference: wgpu::PowerPreference::default(),
+            force_fallback_adapter: false,
+            required_features: wgpu::Features::default(),
+            required_limits: wgpu::Limits::default()
+        }
+    }
+}
+
 /// A graphics context with all the neccessary graphics state
 pub struct PalCtx {
     surface: Option<wgpu::Surface<'static>>,
-    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
 
@@ -34,6 +48,7 @@ pub struct PalCtx {
     surface_id: TextureId,
     surface_texture: Option<wgpu::SurfaceTexture>,
     surface_conf: wgpu::SurfaceConfiguration,
+    new_surface_conf: Option<wgpu::SurfaceConfiguration>,
 
     /// The current command encoder
     command_encoder: Option<wgpu::CommandEncoder>,
@@ -97,14 +112,14 @@ impl PalCtx {
             }
         };
 
-        surface.configure(&device, &surface_conf);
         let surface = Some(surface);
         let surface_id = objects.new_surface_texture();
         let surface_texture = None;
 
+        let new_surface_conf = None;
+
         let mut this = Self {
             surface,
-            adapter,
             device,
             queue,
 
@@ -112,12 +127,13 @@ impl PalCtx {
             surface_id,
             surface_conf,
             surface_texture,
+            new_surface_conf,
 
             command_encoder,
             render_pass,
         };
 
-        this.grab_next_surface();
+        this.update_and_grab_surface();
 
         this
     }
@@ -131,53 +147,6 @@ impl PalCtx {
     /// Check whether a render pass is currently active. While one is active, writing commands to a command encoder is impossible. 
     pub fn render_pass_active(&mut self) -> bool {
         self.render_pass.is_some()
-    }
-
-    fn reconfigure_surface(&mut self) {
-        if let Some(surf) = self.surface.as_ref() {
-            surf.configure(&self.device, &self.surface_conf);
-        }
-    }
-
-    pub fn set_dimensions(&mut self, width: u32, height: u32) {
-        self.surface_conf.width = width;
-        self.surface_conf.height = height;
-
-        self.reconfigure_surface();
-    }
-
-    /// Put a render pass
-    fn set_render_pass(&mut self, rpass: wgpu::RenderPass<'static>) {
-        self.render_pass.replace(rpass);
-    }
-
-    fn drop_render_pass(&mut self) {
-        let _ = self.render_pass.take();
-    }
-
-    /// Get a command encoder to write commands to (will lazily create one if one doesn't exist)
-    fn with_command_encoder<F>(&mut self, f: F)
-    where F: FnOnce(&mut wgpu::CommandEncoder) {
-        
-        // Don't do anything, we currently have a render pass active
-        if self.render_pass_active() {
-            return;
-        }
-
-        let encoder = self.command_encoder.get_or_insert(
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default())
-        );
-
-        f(encoder);
-    }
-
-    /// Submit any work that was written to our command encoder
-    fn submit_command_encoder(&mut self) {
-        self.drop_render_pass();
-        
-        if let Some(encoder) = self.command_encoder.take() {
-            self.queue.submit([encoder.finish()]);
-        } 
     }
 
     fn grab_next_surface(&mut self) {
@@ -208,14 +177,79 @@ impl PalCtx {
                     }
                 },
                 wgpu::CurrentSurfaceTexture::Suboptimal(surf) => {
+                    // A simple trick to make sure that we do reconfigure our surface at the end of the frame
+                    self.new_surface_conf = Some(self.surface_conf.clone());
+
                     self.surface_texture = Some(surf);
-                    surface.configure(&self.device, &self.surface_conf);
                 },
                 wgpu::CurrentSurfaceTexture::Success(surf) => {
                     self.surface_texture = Some(surf)
                 },
             }
         }
+    }
+
+    /// Reconfigure our surface and grab the next available texture.
+    /// 
+    /// Should be called at the end of each frame.
+    fn update_and_grab_surface(&mut self) {
+        self.surface_texture = None;
+
+        // Apply our new surface configuration
+        if let Some(surface_conf) = self.new_surface_conf.take() {
+            self.surface_conf = surface_conf;
+        }
+
+        if let Some(surf) = self.surface.as_ref() {
+            surf.configure(&self.device, &self.surface_conf);
+        }
+
+        self.grab_next_surface();
+    }
+
+    /// Request to resize the surface at the end of the frame
+    pub fn resize_surface(&mut self, width: u32, height: u32) {
+        let surface_conf = self.new_surface_conf.get_or_insert(self.surface_conf.clone());
+
+        surface_conf.width = width;
+        surface_conf.height = height;
+    }
+
+    /// Put a render pass
+    fn set_render_pass(&mut self, rpass: wgpu::RenderPass<'static>) {
+        self.render_pass.replace(rpass);
+    }
+
+    fn drop_render_pass(&mut self) {
+        let _ = self.render_pass.take();
+    }
+
+    /// Get a command encoder to write commands to (will lazily create one if one doesn't exist)
+    fn with_command_encoder<F>(&mut self, f: F)
+    where F: FnOnce(&mut wgpu::CommandEncoder) {
+        
+        // Don't do anything, we currently have a render pass active
+        if self.render_pass_active() {
+            return;
+        }
+
+        let encoder = self.command_encoder.get_or_insert(
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default())
+        );
+
+        f(encoder);
+    }
+
+    /// Submit any work that was written to our command encoder
+    /// 
+    /// Usually you only need to call this if you have some dependencies and need results now (for example writing and then reading from a buffer).
+    /// By default there's no need to call this, since `commit_frame` does everything automatically.
+    pub fn submit_commands(&mut self) {
+        self.drop_render_pass();
+        
+        if let Some(encoder) = self.command_encoder.take() {
+            self.queue.submit([encoder.finish()]);
+        } 
     }
 
     pub(crate) fn objects(&self) -> &ObjectStorage {
@@ -469,13 +503,13 @@ impl PalCtx {
     /// Begin a new render pass
     /// 
     /// It's important that render pass 
-    pub fn begin_render_pass<'a>(&'a mut self, rpass_builder: &'a mut RenderPassBuilder<'a>) {
+    pub fn begin_render_pass(&mut self, rpass_builder: &mut RenderPassBuilder) {
         // Make sure that we first drop our existing render pass if one existed
         self.drop_render_pass();
 
         let mut rpass = None;
         self.with_command_encoder(|enc| {
-            rpass = Some(enc.begin_render_pass(&rpass_builder.build_rpass()).forget_lifetime());
+            rpass = Some(rpass_builder.build_rpass(enc).forget_lifetime());
         });
 
         // And now replace it
@@ -489,14 +523,34 @@ impl PalCtx {
         self.drop_render_pass();
     }
 
-    pub fn submit_frame(&mut self) {
-        self.submit_command_encoder();
+    /// Render the current frame and perform polling
+    pub fn commit_frame(&mut self) {
+        self.submit_commands();
         
         if let Some(surf) = self.surface_texture.take() {
             self.queue.present(surf);
         }
         
         let _ = self.device.poll(wgpu::PollType::Poll);
-        self.grab_next_surface();
+
+        // Perform any configuration and grab our next surface
+        self.update_and_grab_surface();
     }
+}
+
+impl Drop for PalCtx {
+    fn drop(&mut self) {
+        // Make sure that our surface texture drops first
+        self.surface_texture = None;
+        self.command_encoder = None;
+        self.render_pass = None;
+    }
+}
+
+/// Initialize a new PalGL context
+/// 
+/// # Safety
+/// This constructor is insafe because of arbitrary window/display handles handed to that context. 
+pub unsafe fn new_palgl_ctx(init: InitContext, conf: &PalCtxConfig) -> PalCtx {
+    unsafe { pollster::block_on(PalCtx::new(init, conf)) }
 }

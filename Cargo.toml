@@ -9,3 +9,6 @@ name = "palgl"
 [dependencies]
 pollster = "0.4.0"
 wgpu = "30.0.2"
+
+[dev-dependencies]
+winit = "0.30.13"

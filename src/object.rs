@@ -61,7 +61,7 @@ pub struct ShaderId(ObjectId);
 pub struct RPipelineId(ObjectId);
 
 /// General object storage
-pub struct ObjectStorage {
+pub(crate) struct ObjectStorage {
     id_pool: ObjectIDPool,
 
     /// Surface textures are simply reserved handles

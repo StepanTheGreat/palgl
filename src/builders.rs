@@ -1,7 +1,5 @@
 use std::num::{NonZeroU32, NonZeroU64};
 
-use wgpu::naga::compact::KeepUnused::No;
-
 use crate::{ctx::PalCtx, object::TextureId, values::{BlendState, BufferBindingType, CompareFunction, DepthWriteEnabled, IndexFormat, StoreOp, TextureSampleType}};
 
 #[derive(Default, Debug)]
@@ -337,11 +335,11 @@ struct ColorAttachmentEntry {
 
 struct DepthAttachment {
     view: wgpu::TextureView,
-    depth_ops: wgpu::Operations<f32>,
-    stencil_ops: wgpu::Operations<u32>
+    depth_ops: Option<wgpu::Operations<f32>>,
+    stencil_ops: Option<wgpu::Operations<u32>>
 }
 
-pub struct RenderPassBuilder<'a> {
+pub struct RenderPassBuilder {
     color_attachments: Vec<Option<ColorAttachmentEntry>>,
     depth_attachment: Option<DepthAttachment>,
 
@@ -350,12 +348,9 @@ pub struct RenderPassBuilder<'a> {
 
     depth_ops: Option<wgpu::Operations<f32>>,
     stencil_ops: Option<wgpu::Operations<u32>>,
-
-    built_color_attachments: Vec<Option<wgpu::RenderPassColorAttachment<'a>>>,
-    built_depth_attachment: Option<wgpu::RenderPassDepthStencilAttachment<'a>>,
 }
 
-impl<'a> RenderPassBuilder<'a> {
+impl RenderPassBuilder {
     pub fn new() -> Self {
         Self {
             color_attachments: Vec::new(),
@@ -365,9 +360,6 @@ impl<'a> RenderPassBuilder<'a> {
             color_ops: None,
             depth_ops: None,
             stencil_ops: None,
-
-            built_color_attachments: Vec::new(),
-            built_depth_attachment: None
         }
     }
 
@@ -437,8 +429,8 @@ impl<'a> RenderPassBuilder<'a> {
         if let Some(view) = ctx.objects().get_texture_view(view) {
             self.depth_attachment = Some(DepthAttachment {
                 view: view,
-                depth_ops: self.depth_ops.unwrap_or_default(),
-                stencil_ops: self.stencil_ops.unwrap_or_default()
+                depth_ops: self.depth_ops,
+                stencil_ops: self.stencil_ops
             });
         }
 
@@ -446,12 +438,10 @@ impl<'a> RenderPassBuilder<'a> {
         self.stencil_ops = None;
     }
 
-    pub fn reset(&mut self) {
+    /// Clear the entire structure
+    pub fn clear(&mut self) {
         self.color_attachments.clear();
         self.depth_attachment = None;
-
-        self.built_color_attachments.clear();
-        self.built_depth_attachment = None;
 
         self.color_ops = None;
         self.color_resolve_target = None;
@@ -459,9 +449,14 @@ impl<'a> RenderPassBuilder<'a> {
         self.stencil_ops = None;
     }
 
-    pub fn build_rpass(&'a mut self) -> wgpu::RenderPassDescriptor<'a> {
-        self.built_color_attachments.clear();
-        self.built_depth_attachment = None;
+    pub(crate) fn build_rpass<'a>(&mut self, encoder: &'a mut wgpu::CommandEncoder) -> wgpu::RenderPass<'a> {
+        
+        // No safe way to avoid allocations here unfortunately. wgpu inherently requires a slice of texture view references, and self-referential
+        // structs are highly unsafe (lifetimes reject them altogether).
+        // There is a workaround with pointers (where references are kept as static and then directly casted to 'a when building), but
+        // even that has its own unsafety risks. 
+        let mut color_attachments = Vec::new();
+        let mut depth_attachment = None;
 
         for color_attachment in self.color_attachments.iter() {
 
@@ -479,13 +474,21 @@ impl<'a> RenderPassBuilder<'a> {
                 })
             };
 
-            self.built_color_attachments.push(color_attachment);
+            color_attachments.push(color_attachment);
         }
 
-        wgpu::RenderPassDescriptor {
-            color_attachments: &self.built_color_attachments,
-            depth_stencil_attachment: self.built_depth_attachment.clone(),
-            ..Default::default()
+        if let Some(attachment) = self.depth_attachment.as_ref() {
+            depth_attachment = Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &attachment.view,
+                depth_ops: attachment.depth_ops,
+                stencil_ops: attachment.stencil_ops
+            });
         }
+
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &color_attachments,
+            depth_stencil_attachment: depth_attachment,
+            ..Default::default()
+        })
     }
 }
